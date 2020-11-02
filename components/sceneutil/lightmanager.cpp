@@ -2,16 +2,29 @@
 
 #include <osgUtil/CullVisitor>
 
+#include <components/debug/debuglog.hpp>
 #include <components/sceneutil/util.hpp>
 
 namespace SceneUtil
 {
+    Light::Light()
+        : ambient()
+        , diffuse()
+        , position()
+        , specular()
+        , constantAttenuation()
+        , linearAttenuation()
+        , quadraticAttenuation() {}
 
-    class LightStateCache
-    {
-    public:
-        osg::Light* lastAppliedLight[8];
-    };
+    Light::Light(const Light& copy, const osg::CopyOp& copyop)
+        : osg::Node(copy, copyop)
+        , ambient(copy.ambient)
+        , diffuse(copy.diffuse)
+        , position(copy.position)
+        , specular(copy.specular)
+        , constantAttenuation(copy.constantAttenuation)
+        , linearAttenuation(copy.linearAttenuation)
+        , quadraticAttenuation(copy.quadraticAttenuation) {}
 
     LightStateCache* getLightStateCache(unsigned int contextid)
     {
@@ -21,79 +34,57 @@ namespace SceneUtil
         return &cacheVector[contextid];
     }
 
-    // Resets the modelview matrix to just the view matrix before applying lights.
-    class LightStateAttribute : public osg::StateAttribute
-    {
-    public:
-        LightStateAttribute() : mIndex(0) {}
-        LightStateAttribute(unsigned int index, const std::vector<osg::ref_ptr<osg::Light> >& lights) : mIndex(index), mLights(lights) {}
+    void LightStateAttribute::apply(osg::State& state) const {
+        if (mLights.empty())
+            return;
 
-        LightStateAttribute(const LightStateAttribute& copy,const osg::CopyOp& copyop=osg::CopyOp::SHALLOW_COPY)
-            : osg::StateAttribute(copy,copyop), mIndex(copy.mIndex), mLights(copy.mLights) {}
+        osg::Matrix modelViewMatrix = state.getModelViewMatrix();
 
-        unsigned int getMember() const override
-        {
-            return mIndex;
-        }
+        state.applyModelViewMatrix(state.getInitialViewMatrix());
 
-        bool getModeUsage(ModeUsage & usage) const override
-        {
-            for (unsigned int i=0; i<mLights.size(); ++i)
-                usage.usesMode(GL_LIGHT0 + mIndex + i);
-            return true;
-        }
+        LightStateCache* cache = getLightStateCache(state.getContextID());
 
-        int compare(const StateAttribute &sa) const override
-        {
-            throw std::runtime_error("LightStateAttribute::compare: unimplemented");
-        }
+        // Update uniform pointers
+        cache->lightsAmbientUniform = mUniforms[0];
+        cache->lightsDiffuseUniform = mUniforms[1];
+        cache->lightsPositionUniform = mUniforms[2];
+        cache->lightsSpecularUniform = mUniforms[3];
+        cache->lightsConstantAttenuationUniform = mUniforms[4];
+        cache->lightsLinearAttenuationUniform = mUniforms[5];
+        cache->lightsQuadraticAttenuationUniform = mUniforms[6];
+        cache->lightsCountUniform = mUniforms[7];
 
-        META_StateAttribute(NifOsg, LightStateAttribute, osg::StateAttribute::LIGHT)
+        cache->lightsCountUniform->set(static_cast<GLint>(mLights.size()));
 
-        void apply(osg::State& state) const override
-        {
-            if (mLights.empty())
-                return;
-            osg::Matrix modelViewMatrix = state.getModelViewMatrix();
+        for (unsigned int i = 0; i < mLights.size(); ++i) {
+            osg::ref_ptr<Light> currentLight = cache->lastAppliedLights[mIndex + i];
+            osg::ref_ptr<Light> newLight = mLights[i];
 
-            state.applyModelViewMatrix(state.getInitialViewMatrix());
-
-            LightStateCache* cache = getLightStateCache(state.getContextID());
-
-            for (unsigned int i=0; i<mLights.size(); ++i)
-            {
-                osg::Light* current = cache->lastAppliedLight[i+mIndex];
-                if (current != mLights[i].get())
-                {
-                    applyLight((GLenum)((int)GL_LIGHT0 + i + mIndex), mLights[i].get());
-                    cache->lastAppliedLight[i+mIndex] = mLights[i].get();
-                }
+            if (currentLight != newLight) {
+                applyLight(cache, mIndex + i, newLight);
+                cache->lastAppliedLights[mIndex + i] = newLight;
             }
-
-            state.applyModelViewMatrix(modelViewMatrix);
         }
 
-        void applyLight(GLenum lightNum, const osg::Light* light) const
-        {
-            glLightfv( lightNum, GL_AMBIENT,               light->getAmbient().ptr() );
-            glLightfv( lightNum, GL_DIFFUSE,               light->getDiffuse().ptr() );
-            glLightfv( lightNum, GL_SPECULAR,              light->getSpecular().ptr() );
-            glLightfv( lightNum, GL_POSITION,              light->getPosition().ptr() );
-            // TODO: enable this once spot lights are supported
-            // need to transform SPOT_DIRECTION by the world matrix?
-            //glLightfv( lightNum, GL_SPOT_DIRECTION,        light->getDirection().ptr() );
-            //glLightf ( lightNum, GL_SPOT_EXPONENT,         light->getSpotExponent() );
-            //glLightf ( lightNum, GL_SPOT_CUTOFF,           light->getSpotCutoff() );
-            glLightf ( lightNum, GL_CONSTANT_ATTENUATION,  light->getConstantAttenuation() );
-            glLightf ( lightNum, GL_LINEAR_ATTENUATION,    light->getLinearAttenuation() );
-            glLightf ( lightNum, GL_QUADRATIC_ATTENUATION, light->getQuadraticAttenuation() );
-        }
+        state.applyModelViewMatrix(modelViewMatrix);
+    }
 
-    private:
-        unsigned int mIndex;
+    void LightStateAttribute::applyLight(LightStateCache* cache, int lightNum, const osg::ref_ptr<Light>& light) const {
+        // TODO: enable this once spot lights are supported
+        // need to transform SPOT_DIRECTION by the world matrix?
+        //glLightfv( lightNum, GL_SPOT_DIRECTION,        light->getDirection().ptr() );
+        //glLightf ( lightNum, GL_SPOT_EXPONENT,         light->getSpotExponent() );
+        //glLightf ( lightNum, GL_SPOT_CUTOFF,           light->getSpotCutoff() );
 
-        std::vector<osg::ref_ptr<osg::Light> > mLights;
-    };
+        // TODO: Remove this function as the apply step should execute once, also only update uniforms with the data changed
+        cache->lightsAmbientUniform->setElement(lightNum, light->getAmbient());
+        cache->lightsDiffuseUniform->setElement(lightNum, light->getDiffuse());
+        cache->lightsPositionUniform->setElement(lightNum, light->getPosition());
+        cache->lightsSpecularUniform->setElement(lightNum, light->getSpecular());
+        cache->lightsConstantAttenuationUniform->setElement(lightNum, light->getConstantAttenuation());
+        cache->lightsLinearAttenuationUniform->setElement(lightNum, light->getLinearAttenuation());
+        cache->lightsQuadraticAttenuationUniform->setElement(lightNum, light->getQuadraticAttenuation());
+    }
 
     LightManager* findLightManager(const osg::NodePath& path)
     {
@@ -165,14 +156,27 @@ namespace SceneUtil
         , mLightingMask(~0u)
     {
         setUpdateCallback(new LightManagerUpdateCallback);
-        for (unsigned int i=0; i<8; ++i)
-            mDummies.push_back(new LightStateAttribute(i, std::vector<osg::ref_ptr<osg::Light> >()));
+
+        mUniforms.reserve(8);
+        mUniforms.emplace_back(new osg::Uniform(osg::Uniform::Type::FLOAT_VEC4, "lightAmbient", LIGHTS_NUM));
+        mUniforms.emplace_back(new osg::Uniform(osg::Uniform::Type::FLOAT_VEC4, "lightDiffuse", LIGHTS_NUM));
+        mUniforms.emplace_back(new osg::Uniform(osg::Uniform::Type::FLOAT_VEC4, "lightPosition", LIGHTS_NUM));
+        mUniforms.emplace_back(new osg::Uniform(osg::Uniform::Type::FLOAT_VEC4, "lightSpecular", LIGHTS_NUM));
+        mUniforms.emplace_back(new osg::Uniform(osg::Uniform::Type::FLOAT, "lightConstantAttenuation", LIGHTS_NUM));
+        mUniforms.emplace_back(new osg::Uniform(osg::Uniform::Type::FLOAT, "lightLinearAttenuation", LIGHTS_NUM));
+        mUniforms.emplace_back(new osg::Uniform(osg::Uniform::Type::FLOAT, "lightQuadraticAttenuation", LIGHTS_NUM));
+        mUniforms.emplace_back(new osg::Uniform(osg::Uniform::Type::INT, "lightCount"));
+
+        for (unsigned int i = 0; i < LIGHTS_NUM; ++i) {
+            mDummies.push_back(new LightStateAttribute(i, std::vector<osg::ref_ptr<Light>>(), mUniforms));
+        }
     }
 
     LightManager::LightManager(const LightManager &copy, const osg::CopyOp &copyop)
         : osg::Group(copy, copyop)
         , mStartLight(copy.mStartLight)
         , mLightingMask(copy.mLightingMask)
+        , mUniforms(copy.mUniforms)
     {
 
     }
@@ -223,10 +227,10 @@ namespace SceneUtil
     {
         // possible optimization: return a StateSet containing all requested lights plus some extra lights (if a suitable one exists)
         size_t hash = 0;
-        for (unsigned int i=0; i<lightList.size();++i)
-            hash_combine(hash, lightList[i]->mLightSource->getId());
+        for (auto i : lightList)
+            hash_combine(hash, i->mLightSource->getId());
 
-        LightStateSetMap& stateSetCache = mStateSetCache[frameNum%2];
+        LightStateSetMap& stateSetCache = mStateSetCache[frameNum % 2];
 
         LightStateSetMap::iterator found = stateSetCache.find(hash);
         if (found != stateSetCache.end())
@@ -234,23 +238,31 @@ namespace SceneUtil
         else
         {
             osg::ref_ptr<osg::StateSet> stateset = new osg::StateSet;
-            std::vector<osg::ref_ptr<osg::Light> > lights;
+            std::vector<osg::ref_ptr<Light>> lights;
             lights.reserve(lightList.size());
-            for (unsigned int i=0; i<lightList.size();++i)
+            for (unsigned int i = 0; i < lightList.size();++i)
                 lights.emplace_back(lightList[i]->mLightSource->getLight(frameNum));
 
             // the first light state attribute handles the actual state setting for all lights
             // it's best to batch these up so that we don't need to touch the modelView matrix more than necessary
             // don't use setAttributeAndModes, that does not support light indices!
-            stateset->setAttribute(new LightStateAttribute(mStartLight, std::move(lights)), osg::StateAttribute::ON);
+            stateset->setAttribute(new LightStateAttribute(mStartLight, std::move(lights), mUniforms), osg::StateAttribute::ON);
 
-            for (unsigned int i=0; i<lightList.size(); ++i)
-                stateset->setMode(GL_LIGHT0 + mStartLight + i, osg::StateAttribute::ON);
+            for (const osg::ref_ptr<osg::Uniform>& uniform : mUniforms)
+                stateset->addUniform(uniform, osg::StateAttribute::ON);
+
+            //for (unsigned int i=0; i<lightList.size(); ++i)
+            //    stateset->setMode(GL_LIGHT0 + mStartLight + i, osg::StateAttribute::ON);
 
             // need to push some dummy attributes to ensure proper state tracking
             // lights need to reset to their default when the StateSet is popped
-            for (unsigned int i=1; i<lightList.size(); ++i)
-                stateset->setAttribute(mDummies[i+mStartLight].get(), osg::StateAttribute::ON);
+            for (unsigned int i = 1; i < lightList.size(); ++i) {
+                LightStateAttribute* dummy = mDummies[i + mStartLight].get();
+                for (osg::Uniform* uniform : dummy->mUniforms)
+                    stateset->addUniform(uniform, osg::StateAttribute::ON);
+
+                stateset->setAttribute(dummy, osg::StateAttribute::ON);
+            }
 
             stateSetCache.emplace(hash, stateset);
             return stateset;
@@ -290,12 +302,12 @@ namespace SceneUtil
     {
     public:
         DisableLight() : mIndex(0) {}
-        DisableLight(int index) : mIndex(index) {}
+        DisableLight(int index, std::vector<osg::ref_ptr<osg::Uniform>> uniforms) : mIndex(index), mUniforms(std::move(uniforms)) {}
 
-        DisableLight(const DisableLight& copy,const osg::CopyOp& copyop=osg::CopyOp::SHALLOW_COPY)
-            : osg::StateAttribute(copy,copyop), mIndex(copy.mIndex) {}
+        DisableLight(const DisableLight& copy, const osg::CopyOp& copyop=osg::CopyOp::SHALLOW_COPY)
+            : osg::StateAttribute(copy,copyop), mIndex(copy.mIndex), mUniforms(copy.mUniforms) {}
 
-        osg::Object* cloneType() const override { return new DisableLight(mIndex); }
+        osg::Object* cloneType() const override { return new DisableLight(mIndex, mUniforms); }
         osg::Object* clone(const osg::CopyOp& copyop) const override { return new DisableLight(*this,copyop); }
         bool isSameKindAs(const osg::Object* obj) const override { return dynamic_cast<const DisableLight *>(obj)!=nullptr; }
         const char* libraryName() const override { return "SceneUtil"; }
@@ -309,7 +321,7 @@ namespace SceneUtil
 
         bool getModeUsage(ModeUsage & usage) const override
         {
-            usage.usesMode(GL_LIGHT0 + mIndex);
+            //usage.usesMode(GL_LIGHT0 + mIndex);
             return true;
         }
 
@@ -320,6 +332,30 @@ namespace SceneUtil
 
         void apply(osg::State& state) const override
         {
+            LightStateCache* cache = getLightStateCache(state.getContextID());
+            cache->lastAppliedLights[mIndex] = nullptr;
+
+            if (mUniforms.empty()) {
+                return;
+            }
+
+            cache->lightsAmbientUniform = mUniforms[0];
+            cache->lightsDiffuseUniform = mUniforms[1];
+            cache->lightsPositionUniform = mUniforms[2];
+            cache->lightsSpecularUniform = mUniforms[3];
+            cache->lightsConstantAttenuationUniform = mUniforms[4];
+            cache->lightsLinearAttenuationUniform = mUniforms[5];
+            cache->lightsQuadraticAttenuationUniform = mUniforms[6];
+            cache->lightsCountUniform = mUniforms[7];
+
+            cache->lightsAmbientUniform->setElement(mIndex, mnullptr);
+            cache->lightsDiffuseUniform->setElement(mIndex, mnullptr);
+//            cache->lightsPositionUniform->setElement(mIndex, light->getPosition());
+            cache->lightsSpecularUniform->setElement(mIndex, mnullptr);
+//            cache->lightsConstantAttenuationUniform->setElement(mIndex, light->getConstantAttenuation());
+//            cache->lightsLinearAttenuationUniform->setElement(mIndex, light->getLinearAttenuation());
+//            cache->lightsQuadraticAttenuationUniform->setElement(mIndex, light->getQuadraticAttenuation());
+            /*
             int lightNum = GL_LIGHT0 + mIndex;
             glLightfv( lightNum, GL_AMBIENT,               mnullptr.ptr() );
             glLightfv( lightNum, GL_DIFFUSE,               mnullptr.ptr() );
@@ -327,11 +363,14 @@ namespace SceneUtil
 
             LightStateCache* cache = getLightStateCache(state.getContextID());
             cache->lastAppliedLight[mIndex] = nullptr;
+            */
         }
 
     private:
         unsigned int mIndex;
         osg::Vec4f mnullptr;
+
+        std::vector<osg::ref_ptr<osg::Uniform>> mUniforms;
     };
 
     void LightManager::setStartLight(int start)
@@ -341,9 +380,9 @@ namespace SceneUtil
         // Set default light state to zero
         // This is necessary because shaders don't respect glDisable(GL_LIGHTX) so in addition to disabling
         // we'll have to set a light state that has no visible effect
-        for (int i=start; i<8; ++i)
+        for (int i=start; i<LIGHTS_NUM; ++i)
         {
-            osg::ref_ptr<DisableLight> defaultLight (new DisableLight(i));
+            osg::ref_ptr<DisableLight> defaultLight (new DisableLight(i, mUniforms));
             getOrCreateStateSet()->setAttributeAndModes(defaultLight, osg::StateAttribute::OFF);
         }
     }
@@ -369,7 +408,7 @@ namespace SceneUtil
         mId = sLightId++;
 
         for (int i=0; i<2; ++i)
-            mLight[i] = new osg::Light(*copy.mLight[i].get(), copyop);
+            mLight[i] = new Light(*copy.mLight[i]);
     }
 
 
@@ -443,7 +482,7 @@ namespace SceneUtil
         }
         if (!mLightList.empty())
         {
-            unsigned int maxLights = static_cast<unsigned int> (8 - mLightManager->getStartLight());
+            unsigned int maxLights = static_cast<unsigned int> (LIGHTS_NUM - mLightManager->getStartLight());
 
             osg::StateSet* stateset = nullptr;
 

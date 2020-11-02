@@ -16,7 +16,7 @@
 namespace SceneUtil
 {
 
-    void configureLight(osg::Light *light, float radius, bool isExterior)
+    void configureLight(const osg::ref_ptr<Light>& light, float radius, bool isExterior)
     {
         float quadraticAttenuation = 0.f;
         float linearAttenuation = 0.f;
@@ -92,7 +92,7 @@ namespace SceneUtil
     osg::ref_ptr<LightSource> createLightSource(const ESM::Light* esmLight, unsigned int lightMask, bool isExterior, const osg::Vec4f& ambient)
     {
         osg::ref_ptr<SceneUtil::LightSource> lightSource (new SceneUtil::LightSource);
-        osg::ref_ptr<osg::Light> light (new osg::Light);
+        osg::ref_ptr<SceneUtil::Light> light (new SceneUtil::Light);
         lightSource->setNodeMask(lightMask);
 
         float radius = esmLight->mData.mRadius;

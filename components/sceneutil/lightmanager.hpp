@@ -8,6 +8,7 @@
 #include <osg/Group>
 #include <osg/NodeVisitor>
 #include <osg/observer_ptr>
+#include <utility>
 
 namespace osgUtil
 {
@@ -16,6 +17,99 @@ namespace osgUtil
 
 namespace SceneUtil
 {
+    constexpr int LIGHTS_NUM = 64;
+
+    class Light : public osg::Node {
+    public:
+        META_Node(SceneUtil, Light)
+
+        Light();
+
+        Light(const Light& copy, const osg::CopyOp& copyop);
+
+        const osg::Vec4f& getAmbient() const {
+            return ambient;
+        }
+
+        const osg::Vec4f& getDiffuse() const {
+            return diffuse;
+        }
+
+        const osg::Vec4f& getPosition() const {
+            return position;
+        }
+
+        const osg::Vec4f& getSpecular() const {
+            return specular;
+        }
+
+        float getConstantAttenuation() const {
+            return constantAttenuation;
+        }
+
+        float getLinearAttenuation() const {
+            return linearAttenuation;
+        }
+
+        float getQuadraticAttenuation() const {
+            return quadraticAttenuation;
+        }
+
+        void setAmbient(const osg::Vec4f& value) {
+            ambient = value;
+        }
+
+        void setDiffuse(const osg::Vec4f& value) {
+            diffuse = value;
+        }
+
+        void setPosition(const osg::Vec4f& value) {
+            position = value;
+        }
+
+        void setSpecular(const osg::Vec4f& value) {
+            specular = value;
+        }
+
+        void setConstantAttenuation(float value) {
+            constantAttenuation = value;
+        }
+
+        void setLinearAttenuation(float value) {
+            linearAttenuation = value;
+        }
+
+        void setQuadraticAttenuation(float value) {
+            quadraticAttenuation = value;
+        }
+
+    private:
+        osg::Vec4f ambient;
+        osg::Vec4f diffuse;
+        osg::Vec4f position;
+        osg::Vec4f specular;
+
+        float constantAttenuation;
+        float linearAttenuation;
+        float quadraticAttenuation;
+    };
+
+    class LightStateCache
+    {
+    public:
+        osg::ref_ptr<Light> lastAppliedLights[LIGHTS_NUM];
+
+        osg::ref_ptr<osg::Uniform> lightsAmbientUniform;
+        osg::ref_ptr<osg::Uniform> lightsDiffuseUniform;
+        osg::ref_ptr<osg::Uniform> lightsPositionUniform;
+        osg::ref_ptr<osg::Uniform> lightsSpecularUniform;
+
+        osg::ref_ptr<osg::Uniform> lightsConstantAttenuationUniform;
+        osg::ref_ptr<osg::Uniform> lightsLinearAttenuationUniform;
+        osg::ref_ptr<osg::Uniform> lightsQuadraticAttenuationUniform;
+
+        osg::ref_ptr<osg::Uniform> lightsCountUniform;
+    };
 
     /// LightSource managed by a LightManager.
     /// @par Typically used for point lights. Spot lights are not supported yet. Directional lights affect the whole scene
@@ -27,8 +121,8 @@ namespace SceneUtil
     /// @note The position of the contained osg::Light is automatically updated based on the LightSource's world position.
     class LightSource : public osg::Node
     {
-        // double buffered osg::Light's, since one of them may be in use by the draw thread at any given time
-        osg::ref_ptr<osg::Light> mLight[2];
+        // double buffered Light's, since one of them may be in use by the draw thread at any given time
+        osg::ref_ptr<Light> mLight[2];
 
         // LightSource will affect objects within this radius
         float mRadius;
@@ -54,22 +148,24 @@ namespace SceneUtil
             mRadius = radius;
         }
 
-        /// Get the osg::Light safe for modification in the given frame.
+        /// TODO: Correct the comments
+        /// Get the Light safe for modification in the given frame.
         /// @par May be used externally to animate the light's color/attenuation properties,
         /// and is used internally to synchronize the light's position with the position of the LightSource.
-        osg::Light* getLight(unsigned int frame)
+        Light* getLight(unsigned int frame)
         {
             return mLight[frame % 2];
         }
 
-        /// @warning It is recommended not to replace an existing osg::Light, because there might still be
+        /// TODO: Correct the comments
+        /// @warning It is recommended not to replace an existing Light, because there might still be
         /// references to it in the light StateSet cache that are associated with this LightSource's ID.
         /// These references will stay valid due to ref_ptr but will point to the old object.
         /// @warning Do not modify the \a light after you've called this function.
-        void setLight(osg::Light* light)
+        void setLight(Light* light)
         {
             mLight[0] = light;
-            mLight[1] = new osg::Light(*light);
+            mLight[1] = new Light(*light);
         }
 
         /// Get the unique ID for this light source.
@@ -77,6 +173,49 @@ namespace SceneUtil
         {
             return mId;
         }
+    };
+
+    // Resets the modelview matrix to just the view matrix before applying lights.
+    class LightStateAttribute : public osg::StateAttribute
+    {
+    public:
+        LightStateAttribute() : mIndex(0) {}
+        LightStateAttribute(unsigned int index, std::vector<osg::ref_ptr<Light>> lights, std::vector<osg::ref_ptr<osg::Uniform>> uniforms) : mIndex(index), mLights(std::move(lights)), mUniforms(std::move(uniforms)) {}
+
+        LightStateAttribute(const LightStateAttribute& copy, const osg::CopyOp& copyop = osg::CopyOp::SHALLOW_COPY)
+            : osg::StateAttribute(copy, copyop), mIndex(copy.mIndex), mLights(copy.mLights) {}
+
+        unsigned int getMember() const override
+        {
+            return mIndex;
+        }
+
+        bool getModeUsage(ModeUsage& usage) const override
+        {
+            for (unsigned int i = 0; i < mLights.size(); ++i)
+                usage.usesMode(GL_LIGHT0 + mIndex + i);
+            return true;
+        }
+
+        int compare(const StateAttribute& sa) const override
+        {
+            throw std::runtime_error("LightStateAttribute::compare: unimplemented");
+        }
+
+        META_StateAttribute(NifOsg, LightStateAttribute, osg::StateAttribute::LIGHT)
+
+        void apply(osg::State& state) const override;
+
+        // TODO: Add const qualifier to light
+        void applyLight(LightStateCache* cache, int lightNum, const osg::ref_ptr<Light>& light) const;
+
+    private:
+        unsigned int mIndex;
+
+        std::vector<osg::ref_ptr<Light>> mLights;
+
+    public:
+        std::vector<osg::ref_ptr<osg::Uniform>> mUniforms;
     };
 
     /// @brief Decorator node implementing the rendering of any number of LightSources that can be anywhere in the subgraph.
@@ -140,11 +279,12 @@ namespace SceneUtil
         typedef std::map<size_t, osg::ref_ptr<osg::StateSet> > LightStateSetMap;
         LightStateSetMap mStateSetCache[2];
 
-        std::vector<osg::ref_ptr<osg::StateAttribute>> mDummies;
-
         int mStartLight;
 
         unsigned int mLightingMask;
+
+        std::vector<osg::ref_ptr<LightStateAttribute>> mDummies;
+        std::vector<osg::ref_ptr<osg::Uniform>> mUniforms;
     };
 
     /// To receive lighting, objects must be decorated by a LightListCallback. Light list callbacks must be added via
